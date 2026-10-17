@@ -1,0 +1,102 @@
+name: Coding Sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Shell command to run inside workspace/"
+        required: true
+        default: "python --version && node --version && npm --version && git --version"
+        type: string
+      save_workspace:
+        description: "Commit workspace changes back to this repository"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coding-sandbox-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore latest workspace snapshot
+        uses: actions/cache/restore@v4
+        with:
+          path: workspace
+          key: sandbox-workspace-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            sandbox-workspace-${{ github.ref_name }}-
+            sandbox-workspace-
+
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          mkdir -p workspace
+          {
+            echo "Python: $(python --version)"
+            echo "Node: $(node --version)"
+            echo "npm: $(npm --version)"
+            echo "Git: $(git --version)"
+            echo "OS: $(uname -a)"
+          } | tee workspace/.last-environment.txt
+
+      - name: Run requested command
+        shell: bash
+        env:
+          SANDBOX_COMMAND: ${{ inputs.command }}
+        run: |
+          cd workspace
+          echo "Executing command inside workspace/"
+          bash -euo pipefail -c "$SANDBOX_COMMAND"
+
+      - name: Save workspace snapshot
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: workspace
+          key: sandbox-workspace-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Commit workspace changes
+        if: ${{ success() && inputs.save_workspace }}
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain -- workspace)" ]]; then
+            echo "No workspace changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add workspace/
+          git commit -m "Save coding sandbox workspace"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload workspace artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-output-${{ github.run_id }}
+          path: workspace/
+          if-no-files-found: warn
+          retention-days: 7
